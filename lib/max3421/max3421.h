@@ -155,7 +155,7 @@ extern "C" {
 /* HCTL Bits */
 #define bmBUSRST 0x01
 #define bmFRMRST 0x02
-#define bmSAMPLEBUS 0x04
+#define bmSAMPLEBUS 0x04 // 100
 #define bmSIGRSM 0x08
 #define bmRCVTOG0 0x10
 #define bmRCVTOG1 0x20
@@ -213,6 +213,7 @@ extern "C" {
 #define TAG_MAX3421 "max3421"
 #define max3421_TIMEOUT 300
 #define max3421_HANDLE &furi_hal_spi_bus_handle_external
+#define max3421_RES_PIN &gpio_ext_pb2
 
 /** Must call this before using any other max3421 API
  *
@@ -223,6 +224,8 @@ void max3421_init();
  *
  */
 void max3421_deinit();
+void max3421_reset_pin();
+uint8_t max3421_int(void);
 
 uint8_t max3421_write_reg(FuriHalSpiBusHandle* handle, uint8_t reg, uint8_t data);
 void max3421eRegWr(uint8_t reg, uint8_t val);

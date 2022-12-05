@@ -57,8 +57,6 @@ static bool kproxy_event_call(InputEvent event) {
     return true;
 }
 
-
-
 int32_t kproxy_main(void* p) {
     UNUSED(p);
     FuriMessageQueue* event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
@@ -75,23 +73,54 @@ int32_t kproxy_main(void* p) {
     view_port_update(view_port);
 
     InputEvent event;
-
+    bool running = true;
     //MAX
     max3421_init();
+    max3421_reset_pin();
+ //   max3421_reset();
+
+//    while(running) {
+//        // FURI_LOG_I(TAG, "max3421_int: 0x%x", max3421_int());
+//        uint8_t cfg = 0;
+//        uint8_t rreg = 0;
+//
+//        rreg = max3421_read_reg(max3421_HANDLE, rUSBIRQ, &cfg, 1);
+//
+//        FURI_LOG_I(TAG, "cfg: 0x%x", cfg);
+//        FURI_LOG_I(TAG, "rreg: 0x%x", rreg);
+//
+//        furi_delay_tick(200);
+//    }
+
     max3421_poweron();
 
     usbTask();
-    FURI_LOG_I(TAG, "TaskState: 0x%x", usbGetUsbTaskState());
-    max3421_deinit();
-    //MAX
 
-    bool running = false;
+    FURI_LOG_I(TAG, "TaskState: 0x%x", usbGetUsbTaskState());
+
+
+    uint16_t tmp = 0;
     while(running) {
+
+        max3421_busprobe();
+
+        usbTask();
+        FURI_LOG_I(TAG, "TaskState: 0x%x", usbGetUsbTaskState());
+
+        furi_delay_ms(1000);
+        tmp++; //timeout after 100ms
+        if(tmp == 500) {
+            running = false;
+        }
+
         if(furi_message_queue_get(event_queue, &event, 100) == FuriStatusOk) {
             running = kproxy_event_call(event);
             view_port_update(view_port);
         }
     }
+
+    max3421_deinit();
+    //MAX
 
     view_port_enabled_set(view_port, false);
     gui_remove_view_port(gui, view_port);

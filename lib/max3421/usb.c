@@ -50,7 +50,7 @@ EP_RECORD dev0ep; //Endpoint data structure used during enumeration for uninitia
 
 /* constructor */
 unsigned long millis() {
-    return furi_get_tick();
+    return furi_get_tick()/1000;
 }
 
 void usbUSB() {

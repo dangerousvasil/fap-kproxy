@@ -10,11 +10,22 @@ static uint8_t vbusState;
 void max3421_init() {
     furi_hal_spi_bus_handle_init(max3421_HANDLE);
     furi_hal_spi_acquire(max3421_HANDLE);
+    furi_hal_gpio_init(max3421_RES_PIN, GpioModeOutputPushPull, GpioPullUp, GpioSpeedLow);
+    furi_hal_gpio_write(max3421_RES_PIN, false);
 }
 
 void max3421_deinit() {
     furi_hal_spi_release(max3421_HANDLE);
     furi_hal_spi_bus_handle_deinit(max3421_HANDLE);
+    furi_hal_gpio_write(max3421_RES_PIN, false);
+    furi_hal_gpio_init(max3421_RES_PIN, GpioModeAnalog, GpioPullNo, GpioSpeedLow);
+}
+
+void max3421_reset_pin() {
+    furi_hal_gpio_write(max3421_RES_PIN, true);
+    furi_delay_ms(20);
+    furi_hal_gpio_write(max3421_RES_PIN, false);
+    furi_delay_ms(10);
 }
 
 void max3421_spi_trx(
@@ -45,6 +56,7 @@ uint8_t max3421_read_reg(FuriHalSpiBusHandle* handle, uint8_t reg, uint8_t* data
     memset(&tx[1], 0, size);
     max3421_spi_trx(handle, tx, rx, size + 1, max3421_TIMEOUT);
     memcpy(data, &rx[1], size);
+    FURI_LOG_I(TAG_MAX3421, "rreg %x %x", rx[0], rx[1]);
     return rx[0];
 }
 
@@ -96,26 +108,31 @@ void max3421_busprobe() {
         break;
     } //end switch( bus_sample )
 }
+uint8_t max3421_int(void) {
+    uint8_t HIRQ;
+    uint8_t HIRQ_sendback = 0x00;
+    HIRQ = max3421eRegRd(rHIRQ); //determine interrupt source
+    //if( HIRQ & bmFRAMEIRQ ) {               //->1ms SOF interrupt handler
+    //    HIRQ_sendback |= bmFRAMEIRQ;
+    //}//end FRAMEIRQ handling
+    if(HIRQ & bmCONDETIRQ) {
+        max3421_busprobe();
+        HIRQ_sendback |= bmCONDETIRQ;
+    }
+    /* End HIRQ interrupts handling, clear serviced IRQs    */
+    max3421eRegWr(rHIRQ, HIRQ_sendback);
+    return (HIRQ_sendback);
+}
 
 uint8_t max3421_reset(void) {
     uint16_t tmp = 0;
-    max3421_write_reg(max3421_HANDLE, rUSBCTL, bmCHIPRES); //Chip reset. This stops the oscillator
-    max3421_write_reg(max3421_HANDLE, rUSBCTL, 0x00); //Remove the reset
+    max3421eRegWr(rUSBCTL, bmCHIPRES); //Chip reset. This stops the oscillator
+    max3421eRegWr(rUSBCTL, 0x00); //Remove the reset
 
-    // while(!(max3421eRegRd( rUSBIRQ ) & bmOSCOKIRQ )) {
-
-    //wait until the PLL is stable
-
-    uint8_t cfg = 0;
-    bool running = true;
-    while(running) {
-        max3421_read_reg(max3421_HANDLE, rUSBIRQ, &cfg, 1);
-        running = cfg & bmOSCOKIRQ;
-        furi_delay_ms(10);
-
+    while(!(max3421eRegRd(rUSBIRQ) & bmOSCOKIRQ)) { //wait until the PLL is stable
+        furi_delay_tick(200);
         tmp++; //timeout after 100ms
         if(tmp == 10) {
-            FURI_LOG_I(TAG_MAX3421, "rUSBIRQ %d", cfg);
             return (false);
         }
     }
@@ -127,23 +144,32 @@ void max3421eRegWr(uint8_t reg, uint8_t val) {
 }
 
 uint8_t max3421eRegRd(uint8_t reg) {
-    uint8_t cfg = 0;
-    max3421_read_reg(max3421_HANDLE, reg, &cfg, 1);
-    return cfg;
+    uint8_t size = 1;
+    uint8_t tx[size + 1];
+    uint8_t rx[size + 1];
+    memset(rx, 0, size + 1);
+    tx[0] = (reg);
+    memset(&tx[1], 0, size);
+    max3421_spi_trx(max3421_HANDLE, tx, rx, size + 1, max3421_TIMEOUT);
+    //memcpy(data, &rx[1], size);
+    FURI_LOG_I(TAG_MAX3421, "rreg %x %d %d",  reg, rx[0], rx[1]);
+    return rx[0];
+
+    // uint8_t cfg = 0;
+    // max3421_read_reg(max3421_HANDLE, reg, &cfg, 1);
+    // return cfg;
 }
 
-char* max3421eBytesWr(uint8_t reg, uint8_t nbytes, char* data )
-{
-    while(nbytes--){
+char* max3421eBytesWr(uint8_t reg, uint8_t nbytes, char* data) {
+    while(nbytes--) {
         max3421eRegWr(reg, *data);
         data++;
     }
-    return( data );
+    return (data);
 }
 
-char* max3421eBytesRd(uint8_t reg, uint8_t nbytes, char* data)
-{
-    while(nbytes--){
+char* max3421eBytesRd(uint8_t reg, uint8_t nbytes, char* data) {
+    while(nbytes--) {
         *data = max3421eRegRd(reg);
         data++;
     }
@@ -151,59 +177,81 @@ char* max3421eBytesRd(uint8_t reg, uint8_t nbytes, char* data)
     return data;
 }
 
-
-uint8_t getVbusState(void)
-{
-    return( vbusState );
+uint8_t getVbusState(void) {
+    return (vbusState);
 }
 
-
 void max3421_poweron() {
-    max3421_write_reg(
-        max3421_HANDLE,
-        rPINCTL,
-        (bmFDUPSPI + bmINTLEVEL + bmGPXB)); // Full-duplex SPI, level interrupt, GPX
-
-    if(max3421_reset() == false) { // stop/start the oscillator
-        FURI_LOG_I(TAG_MAX3421, "Error: OSCOKIRQ failed to assert");
-        return;
-    } else {
-        FURI_LOG_I(TAG_MAX3421, "MAX3421e reset [ok]");
+    max3421eRegWr( rPINCTL,( bmFDUPSPI + bmINTLEVEL + bmGPXB ));	// Full-duplex SPI, level interrupt, GPX
+    if( max3421_reset() == false ) {                                // stop/start the oscillator
+        FURI_LOG_I(TAG_MAX3421,"Error: OSCOKIRQ failed to assert");
+        return ;
+    }else{
+        FURI_LOG_I(TAG_MAX3421,"MAX3421e reset [ok]\r\n");
     }
+
 
     /* configure host operation */
-    max3421_write_reg(
-        max3421_HANDLE,
-        rMODE,
-        bmDPPULLDN | bmDMPULLDN | bmHOST |
-            bmSEPIRQ); // set pull-downs, Host, Separate GPIN IRQ on GPX
-    max3421_write_reg(max3421_HANDLE, rHIEN, bmCONDETIE | bmFRAMEIE); // connection detection
+    max3421eRegWr( rMODE, bmDPPULLDN|bmDMPULLDN|bmHOST|bmSEPIRQ );      // set pull-downs, Host, Separate GPIN IRQ on GPX
+    max3421eRegWr( rHIEN, bmCONDETIE|bmFRAMEIE );                       // connection detection
     /* check if device is connected */
-    max3421_write_reg(max3421_HANDLE, rHCTL, bmSAMPLEBUS); // sample USB bus
+    max3421eRegWr( rHCTL,bmSAMPLEBUS );                                 // sample USB bus
+    while(!(max3421eRegRd( rHCTL ) & bmSAMPLEBUS ));                    // wait for sample operation to finish
+    max3421_busprobe();                                                       // check if anything is connected
+    max3421eRegWr( rHIRQ, bmCONDETIRQ );                                // clear connection detect interrupt
+    max3421eRegWr( rCPUCTL, 0x01 );                                     // enable interrupt pin
 
-    bool running = true;
-
-    uint8_t cfg = 0;
-    uint8_t ii = 0;
-    while(running) {
-        ii++;
-        max3421_read_reg(max3421_HANDLE, rHCTL, &cfg, 1);
-        FURI_LOG_I(TAG_MAX3421, "rHCTL %d", cfg);
-        running = !(cfg & bmSAMPLEBUS);
-        if(ii == 255) {
-            FURI_LOG_I(TAG_MAX3421, "panic");
-            return;
-        }
-    }
-
-    max3421_busprobe(); // check if anything is connected
-
-    max3421_write_reg(max3421_HANDLE, rHIRQ, bmCONDETIRQ); // clear connection detect interrupt
-    max3421_write_reg(max3421_HANDLE, rCPUCTL, 0x01); // enable interrupt pin
-
-    FURI_LOG_I(TAG_MAX3421, "MAX3421e powered on [ok]");
-
-    furi_delay_ms(200);
+    FURI_LOG_I(TAG_MAX3421,"MAX3421e powered on [ok]\r\n");
+    return ;
+//    max3421_write_reg(
+//        max3421_HANDLE,
+//        rPINCTL,
+//        (bmFDUPSPI + bmINTLEVEL + bmGPXB)); // Full-duplex SPI, level interrupt, GPX
+//
+//    if(max3421_reset() == false) { // stop/start the oscillator
+//        FURI_LOG_I(TAG_MAX3421, "Error: OSCOKIRQ failed to assert");
+//        return;
+//    } else {
+//        FURI_LOG_I(TAG_MAX3421, "MAX3421e reset [ok]");
+//    }
+//
+//    /* configure host operation */
+//    max3421_write_reg(
+//        max3421_HANDLE,
+//        rMODE,
+//        bmDPPULLDN | bmDMPULLDN | bmHOST |
+//            bmSEPIRQ); // set pull-downs, Host, Separate GPIN IRQ on GPX
+//
+//    FURI_LOG_I(TAG_MAX3421, "MAX3421e rMODE [%x]", bmDPPULLDN | bmDMPULLDN | bmHOST | bmSEPIRQ);
+//
+//    max3421_write_reg(max3421_HANDLE, rHIEN, bmCONDETIE | bmFRAMEIE); // connection detection
+//    /* check if device is connected */
+//    max3421_write_reg(max3421_HANDLE, rHCTL, bmSAMPLEBUS); // sample USB bus
+//
+//    bool running = true;
+//
+//    uint8_t cfg = 0;
+//    uint8_t rreg = 0;
+//    uint8_t ii = 0;
+//    while(running) {
+//        ii++;
+//        rreg = max3421_read_reg(max3421_HANDLE, rHCTL, &cfg, 1);
+//        FURI_LOG_I(TAG_MAX3421, "rHCTL %d %d", rreg);
+//        running = !(rreg & bmSAMPLEBUS);
+//        if(ii == 255) {
+//            FURI_LOG_I(TAG_MAX3421, "panic");
+//            return;
+//        }
+//    }
+//
+//    max3421_busprobe(); // check if anything is connected
+//
+//    max3421_write_reg(max3421_HANDLE, rHIRQ, bmCONDETIRQ); // clear connection detect interrupt
+//    max3421_write_reg(max3421_HANDLE, rCPUCTL, 0x01); // enable interrupt pin
+//
+//    FURI_LOG_I(TAG_MAX3421, "MAX3421e powered on [ok]");
+//
+//    furi_delay_ms(200);
 }
 
 void hexlify(uint8_t* in, uint8_t size, char* out) {
